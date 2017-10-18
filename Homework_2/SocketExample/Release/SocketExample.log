@@ -1,0 +1,11 @@
+﻿C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\Common7\IDE\VC\VCTargets\Microsoft.CppBuild.targets(387,5): warning MSB8028: The intermediate directory (Release\) contains files shared from another project (SocketExample.vcxproj).  This can lead to incorrect clean and rebuild behavior.
+  stdafx.cpp
+  Logger.cpp
+Logger.cpp(431): warning C4551: function call missing argument list
+  Generating code
+  18 of 21 functions (85.7%) were compiled, the rest were copied from previous compilation.
+    0 functions were new in current compilation
+    0 functions had inline decision re-evaluated but remain unchanged
+  Finished generating code
+  SocketExample.vcxproj -> D:\masly\Documents\IAG0010\Homework_1\Release\Homework_1.exe
+  SocketExample.vcxproj -> D:\masly\Documents\IAG0010\Homework_1\Release\Homework_1.pdb (Full PDB)
