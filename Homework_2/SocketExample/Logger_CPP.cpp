@@ -6,6 +6,8 @@
 
 #pragma warning(disable : 4996)
 
+//testing a commit
+
 //
 // Global variables
 //
