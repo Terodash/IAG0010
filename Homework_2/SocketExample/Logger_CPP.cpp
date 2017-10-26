@@ -28,12 +28,16 @@ BOOL measStarted = FALSE;
 BOOL hRDataProcessed = FALSE;
 _TCHAR FilePath[2048];
 HANDLE hOutputFile;
+WSABUF SendBuf;			// buffer for data to be sent to server
+HANDLE hSendNet;		// TCP/IP info sending thread handle
+
 
 //
 // Prototypes
 //
 unsigned int __stdcall ReadKeyboard(void* pArguments); //reads keyboard
-unsigned int __stdcall ReceiveNet(void* pArguments); //receives data from server
+unsigned int __stdcall SendNet(void* pArguments); //receives data from server
+unsigned int __stdcall SendNet(void* pArguments); //sends data to server
 const char * parseData(char *data); //parses received data, outputs to console and writes to file
 void sendCommand(SOCKET hClientSocket, wchar_t *command); //creates package and sends command to server
 void evalResponse(WSABUF DataBuf); //evaluates the server's response, and acts accordingly
@@ -353,6 +357,104 @@ out:
 	return 0;
 }
 
+//********************************************************************************************************************
+//                          TCP/IP INFO SENDING THREAD
+//********************************************************************************************************************
+unsigned int __stdcall SendNet(void* pArguments)
+{
+	//_tprintf(_T("\tIN:SendNet\n"));
+	//
+	// Preparations
+	//
+	HANDLE NetEvents[2];
+	NetEvents[0] = hStopCommandGot;
+	WSAOVERLAPPED Overlapped;
+	memset(&Overlapped, 0, sizeof Overlapped);
+	Overlapped.hEvent = NetEvents[1] = WSACreateEvent(); // manual and nonsignaled
+	DWORD Result, Error;
+	//
+	// Receiving loop
+	//
+	while (TRUE)
+	{
+		//_tprintf(_T("\tIN:SendNet\n"));
+		/**int WSASend(
+			_In_  SOCKET                             s,
+			_In_  LPWSABUF                           lpBuffers,
+			_In_  DWORD                              dwBufferCount,
+			_Out_ LPDWORD                            lpNumberOfBytesSent,
+			_In_  DWORD                              dwFlags,
+			_In_  LPWSAOVERLAPPED                    lpOverlapped,
+			_In_  LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+		); */
+		Result = WSASend(hClientSocket,
+			&SendBuf,
+			1,  // no comments here
+			&nReceivedBytes,
+			&ReceiveFlags, // no comments here
+			&Overlapped,
+			NULL);  // no comments here
+		if (Result == SOCKET_ERROR)
+		{  // Returned with socket error, let us examine why
+			if ((Error = WSAGetLastError()) != WSA_IO_PENDING)
+			{  // Unable to continue, for example because the server has closed the connection
+				_tprintf(_T("WSARecv() failed, error %d\n"), Error);
+				conAccepted = FALSE;
+				goto out;
+			}
+			DWORD WaitResult = WSAWaitForMultipleEvents(2, NetEvents, FALSE, WSA_INFINITE, FALSE); // wait for data
+			switch (WaitResult) // analyse why the waiting ended
+			{
+			case WAIT_OBJECT_0:
+				// Waiting stopped because hStopCommandGot has become signaled, i.e. the user has decided to exit
+				conAccepted = FALSE;
+				goto out;
+			case WAIT_OBJECT_0 + 1:
+				// Waiting stopped because Overlapped.hEvent is now signaled, i.e. the receiving operation has ended. 
+				// Now we have to see how many bytes we have got.
+				WSAResetEvent(NetEvents[1]); // to be ready for the next data package
+				if (WSAGetOverlappedResult(hClientSocket, &Overlapped, &nReceivedBytes, FALSE, &ReceiveFlags))
+				{
+					_tprintf(_T("%d bytes received\n"), nReceivedBytes);
+					//_tprintf(_T("Received response: %hs\n"), DataBuf.buf + sizeof(int));
+					// Here should follow the processing of received data
+					evalResponse(DataBuf);
+
+					break;
+				}
+				else
+				{	// Fatal problems
+					_tprintf(_T("WSAGetOverlappedResult() failed, error %d\n"), GetLastError());
+					conAccepted = FALSE;
+					goto out;
+				}
+			default: // Fatal problems
+				_tprintf(_T("WSAWaitForMultipleEvents() failed, error %d\n"), WSAGetLastError());
+				conAccepted = FALSE;
+				goto out;
+			}
+		}
+		else
+		{  // Returned immediately without socket error
+			if (!nReceivedBytes)
+			{  // When the receiving function has read nothing and returned immediately, the connection is off  
+				_tprintf(_T("Server has closed the connection\n"));
+				conAccepted = FALSE;
+				goto out;
+			}
+			else
+			{
+				_tprintf(_T("%d bytes received\n"), nReceivedBytes);
+				// Here should follow the processing of received data
+				evalResponse(DataBuf);
+			}
+		}
+	}
+out:
+	WSACloseEvent(NetEvents[1]);
+	return 0;
+}
+
 BOOL estCon() {
 	//_tprintf(_T("\tIN:estCon\n"));
 	//
@@ -393,9 +495,16 @@ BOOL estCon() {
 	//
 	if (!SocketError)
 	{
-		if (!(hReceiveNet = (HANDLE)_beginthreadex(NULL, 0, &ReceiveNet, NULL, 0, NULL)))
+		if (!(hReceiveNet = (HANDLE)_beginthreadex(NULL, 0, &ReceiveNet, NULL, 0, NULL))) // TODO: check where this handle appears and add hSendNet accordingly
 		{
 			_tprintf(_T("Unable to create socket receiving thread\n"));
+			SetEvent(hCommandProcessed);
+			return FALSE;
+		}
+	}
+	if (!SocketError) {
+		if (!(hSendNet = (HANDLE)_beginthreadex(NULL, 0, &SendNet, NULL, 0, NULL))) {
+			_tprintf(_T("Unable to create socket sending thread\n"));
 			SetEvent(hCommandProcessed);
 			return FALSE;
 		}
@@ -542,7 +651,7 @@ const char * parseData(char *data) {
 				strcpy(dToWrite, stringMeas);
 				writeToFile(dToWrite, hOutputFile);
 			}
-			else if (!strcmp(pname, "Output solution concentration")) { //TODO: ask about the data types!
+			else if (!strcmp(pname, "Output solution concentration")) {
 				int measurement; //the measurement is an integer for given point (only "Level" points are integers)
 				//_tprintf(_T("Pos: %d\n"), pos);
 				memcpy(&measurement, data + pos, sizeof(int));
@@ -563,7 +672,7 @@ const char * parseData(char *data) {
 				strcpy(dToWrite, stringMeas);
 				writeToFile(dToWrite, hOutputFile);
 			}
-			else if (!strcmp(pname, "Output solution conductivity")) { //TODO: ask about the data types!
+			else if (!strcmp(pname, "Output solution conductivity")) {
 				double measurement; //the measurement is an integer for given point (only "Level" points are integers)
 				//_tprintf(_T("Pos: %d\n"), pos);
 				memcpy(&measurement, data + pos, sizeof(double));
